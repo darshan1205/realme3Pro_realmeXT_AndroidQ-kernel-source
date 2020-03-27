@@ -744,15 +744,14 @@ static void fastrpc_mmap_free(struct fastrpc_mmap *map, uint32_t flags)
 	}
 	if (map->flags == ADSP_MMAP_HEAP_ADDR ||
 				map->flags == ADSP_MMAP_REMOTE_HEAP_ADDR) {
-		unsigned long dma_attrs = 0;
 
 		if (me->dev == NULL) {
 			pr_err("failed to free remote heap allocation\n");
 			return;
 		}
 		if (map->phys) {
-			dma_attrs |=
-			DMA_ATTR_SKIP_ZEROING | DMA_ATTR_NO_KERNEL_MAPPING;
+			unsigned long dma_attrs = DMA_ATTR_SKIP_ZEROING |
+						DMA_ATTR_NO_KERNEL_MAPPING;
 			dma_free_attrs(me->dev, map->size, (void *)map->va,
 					(dma_addr_t)map->phys, dma_attrs);
 		}
@@ -2451,29 +2450,34 @@ static int fastrpc_munmap_on_dsp_rh(struct fastrpc_file *fl, uint64_t phys,
 {
 	int err = 0;
 	struct fastrpc_apps *me = &gfa;
+	int tgid = 0;
 	int destVM[1] = {VMID_HLOS};
 	int destVMperm[1] = {PERM_READ | PERM_WRITE | PERM_EXEC};
 
 	if (flags == ADSP_MMAP_HEAP_ADDR) {
 		struct fastrpc_ioctl_invoke_crc ioctl;
 		struct scm_desc desc = {0};
-		remote_arg_t ra[1];
-		int err = 0;
+		remote_arg_t ra[2];
+
 		struct {
 			uint8_t skey;
 		} routargs;
 
-		ra[0].buf.pv = (void *)&routargs;
-		ra[0].buf.len = sizeof(routargs);
+		if (fl == NULL)
+			goto bail;
+		tgid = fl->tgid;
+		ra[0].buf.pv = (void *)&tgid;
+		ra[0].buf.len = sizeof(tgid);
+		ra[1].buf.pv = (void *)&routargs;
+		ra[1].buf.len = sizeof(routargs);
 
 		ioctl.inv.handle = FASTRPC_STATIC_HANDLE_KERNEL;
-		ioctl.inv.sc = REMOTE_SCALARS_MAKE(7, 0, 1);
+		ioctl.inv.sc = REMOTE_SCALARS_MAKE(9, 1, 1);
 		ioctl.inv.pra = ra;
 		ioctl.fds = NULL;
 		ioctl.attrs = NULL;
 		ioctl.crc = NULL;
-		if (fl == NULL)
-			goto bail;
+
 
 		VERIFY(err, 0 == (err = fastrpc_internal_invoke(fl,
 				FASTRPC_MODE_PARALLEL, 1, &ioctl)));
@@ -3482,6 +3486,13 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 		return err;
 	snprintf(strpid, PID_SIZE, "%d", current->pid);
 	buf_size = strlen(current->comm) + strlen("_") + strlen(strpid) + 1;
+	/* yanghao@PSW.Kernel.Stability kasan detect the buf_size < snprintf return size caused 
+	 * the out of bounds. here just alloc the UL_SIZE 2019-01-05
+	 */
+#ifdef VENDOR_EDIT
+	if (buf_size < UL_SIZE)
+		buf_size = UL_SIZE;
+#endif /*VENDOR_EDIT*/
 	fl->debug_buf = kzalloc(buf_size, GFP_KERNEL);
 	snprintf(fl->debug_buf, UL_SIZE, "%.10s%s%d",
 	current->comm, "_", current->pid);
